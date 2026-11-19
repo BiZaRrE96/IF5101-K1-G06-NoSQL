@@ -1,0 +1,6 @@
+# Keep LF in the repo and in checkouts: these files are copied into Linux
+# containers (shell scripts, nginx/redis configs), even when cloned on Windows.
+* text=auto eol=lf
+
+# The seed is one-line JSON from mongoexport; textual diffs are not useful.
+mongo/seed/*.json -diff linguist-generated

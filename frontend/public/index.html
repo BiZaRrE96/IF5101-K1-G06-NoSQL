@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data Olahraga Kota Bandung</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>Data Olahraga Kota Bandung</h1>
+    <p>Fasilitas, event, dan atlet</p>
+  </header>
+
+  <nav id="type-tabs" class="tabs" aria-label="Jenis data"></nav>
+
+  <main class="layout">
+    <aside>
+      <form id="filter-form" class="filters">
+        <h2>Filter</h2>
+        <div id="filter-fields"></div>
+        <div class="actions">
+          <button type="submit">Terapkan</button>
+          <button type="reset" class="secondary">Reset</button>
+        </div>
+      </form>
+    </aside>
+
+    <section class="results">
+      <div id="status" class="status" role="status"></div>
+      <div class="table-wrap">
+        <table id="results">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="prev" type="button">&lsaquo; Sebelumnya</button>
+        <span id="page-info"></span>
+        <button id="next" type="button">Berikutnya &rsaquo;</button>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="detail">
+    <form method="dialog"><button class="close" aria-label="Tutup">&times;</button></form>
+    <h2 id="detail-title"></h2>
+    <div id="detail-body"></div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
