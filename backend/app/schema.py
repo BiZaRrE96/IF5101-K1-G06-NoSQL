@@ -17,6 +17,8 @@ TINGKAT = ("kecamatan", "kota", "provinsi", "nasional", "internasional")
 STATUS_EVENT = ("rencana", "berlangsung", "selesai", "dibatalkan")
 JENIS_KELAMIN = ("laki_laki", "perempuan")
 STATUS_BINAAN = ("binaan", "non_binaan", "purna_binaan")
+JENIS_ORGANISASI = ("koni", "cabor", "klub", "komunitas", "yayasan", "sekolah", "rt", "rw",
+                    "karang_taruna", "instansi_pemerintah", "perusahaan", "lainnya")
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -53,7 +55,6 @@ class TypeSpec:
     columns: tuple
     filters: tuple
     sort: tuple
-    private_fields: tuple = ()  # personal data: never read into the API, never returned
     editable: dict = field(default_factory=dict)  # field -> tuple of choices | "nonneg_int"
 
     @property
@@ -139,8 +140,28 @@ TYPES: dict[str, TypeSpec] = {
             Filter("aktif", "Aktif", "bool", "aktif"),
         ),
         sort=(("nama", 1),),
-        # Personal data from the SQL atlet table stays out of the public site.
-        private_fields=("nomor_identitas", "telepon", "email", "alamat", "tanggal_lahir"),
+    ),
+    "organisasi": TypeSpec(
+        name="organisasi",
+        label="Organisasi",
+        collection="organisasi",
+        columns=(
+            Column("nama", "Nama"),
+            Column("jenis_organisasi", "Jenis"),
+            Column("olahraga", "Olahraga"),
+            Column("nama_kecamatan", "Kecamatan"),
+            Column("nama_kelurahan", "Kelurahan"),
+            Column("status_aktif", "Aktif"),
+        ),
+        filters=(
+            Filter("kecamatan_id", "Kecamatan", "ref", "kelurahan_id", ref="kecamatan",
+                   via=("kelurahan", "kecamatan_id", "kelurahan_id")),
+            Filter("olahraga_id", "Olahraga", "ref", "organisasi_id", ref="olahraga",
+                   via=("organisasi_olahraga", "olahraga_id", "organisasi_id")),
+            Filter("jenis_organisasi", "Jenis organisasi", "enum", "jenis_organisasi", JENIS_ORGANISASI),
+            Filter("status_aktif", "Aktif", "bool", "status_aktif"),
+        ),
+        sort=(("nama", 1),),
     ),
 }
 

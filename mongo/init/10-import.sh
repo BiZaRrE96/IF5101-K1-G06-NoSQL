@@ -75,10 +75,16 @@ const indexes = [
 
   ["event", { tanggal_mulai: -1, nama: 1, event_id: 1 }, {}],
   ["event", { olahraga_id: 1 }, {}],
+  ["event", { organisasi_id: 1 }, {}],
 
   ["kecamatan", { nama: 1 }, {}],
   ["olahraga", { nama: 1 }, {}],
   ["organisasi", { nama: 1 }, {}],
+  ["organisasi", { nama: 1, organisasi_id: 1 }, {}],
+  ["organisasi", { kelurahan_id: 1 }, {}],
+  ["organisasi", { jenis_organisasi: 1 }, {}],
+  ["organisasi_olahraga", { olahraga_id: 1 }, {}],
+  ["organisasi_olahraga", { organisasi_id: 1 }, {}],
 ];
 
 for (const [coll, keys, opts] of indexes) {

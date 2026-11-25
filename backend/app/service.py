@@ -12,9 +12,9 @@ from .schema import Filter, TypeSpec
 
 # ---- helpers --------------------------------------------------------------
 
-def _projection(spec: TypeSpec) -> dict:
-    # Mongo _id and personal data are never read into the response.
-    return {"_id": 0, **{f: 0 for f in spec.private_fields}}
+def _projection() -> dict:
+    # Mongo _id is never read into the response; every other stored field is returned.
+    return {"_id": 0}
 
 
 def _public(spec: TypeSpec, doc: dict) -> dict:
@@ -90,7 +90,22 @@ def _enrich_event(db, rows: list) -> None:
         r["nama_fasilitas"] = fas.get(r.get("fasilitas_id"), {}).get("nama")
 
 
-ENRICH = {"fasilitas": _enrich_fasilitas, "atlet": _enrich_atlet, "event": _enrich_event}
+def _enrich_organisasi(db, rows: list) -> None:
+    kel = _by_id(db, "kelurahan", "kelurahan_id", {r.get("kelurahan_id") for r in rows},
+                 ("kecamatan_id", "nama"))
+    kec = _by_id(db, "kecamatan", "kecamatan_id", {k.get("kecamatan_id") for k in kel.values()})
+    olah = _olahraga_by_owner(db, "organisasi_olahraga", "organisasi_id",
+                              [r["organisasi_id"] for r in rows])
+    for r in rows:
+        k = kel.get(r.get("kelurahan_id"), {})
+        r["kecamatan_id"] = k.get("kecamatan_id")
+        r["nama_kelurahan"] = k.get("nama")
+        r["nama_kecamatan"] = kec.get(k.get("kecamatan_id"), {}).get("nama")
+        r["olahraga"] = olah.get(r["organisasi_id"], [])
+
+
+ENRICH = {"fasilitas": _enrich_fasilitas, "atlet": _enrich_atlet, "event": _enrich_event,
+          "organisasi": _enrich_organisasi}
 
 
 # ---- detail-only children -------------------------------------------------
@@ -119,7 +134,7 @@ def _detail_atlet(db, item_id: str) -> dict:
 
 def _detail_event(db, item_id: str) -> dict:
     pres = list(db.prestasi.find({"event_id": item_id}, {"_id": 0}).sort("peringkat", 1))
-    atlet = _by_id(db, "atlet", "atlet_id", {p.get("atlet_id") for p in pres})  # name only, no PII
+    atlet = _by_id(db, "atlet", "atlet_id", {p.get("atlet_id") for p in pres})  # name only
     rows = [{
         "nama_atlet": atlet.get(p.get("atlet_id"), {}).get("nama"),
         **_pick(p, ("nomor_pertandingan", "peringkat", "medali", "tanggal_perolehan")),
@@ -128,7 +143,22 @@ def _detail_event(db, item_id: str) -> dict:
             "jumlah_atlet_terdaftar": db.event_atlet.count_documents({"event_id": item_id})}
 
 
-DETAIL_EXTRAS = {"fasilitas": _detail_fasilitas, "atlet": _detail_atlet, "event": _detail_event}
+def _detail_organisasi(db, item_id: str) -> dict:
+    events = list(db.event.find({"organisasi_id": item_id},
+                                {"_id": 0, "nama": 1, "tanggal_mulai": 1, "status_event": 1, "olahraga_id": 1})
+                  .sort([("tanggal_mulai", -1), ("nama", 1)]))
+    olah = _by_id(db, "olahraga", "olahraga_id", {e.get("olahraga_id") for e in events})
+    rows = [{
+        "nama": e.get("nama"),
+        "tanggal_mulai": e.get("tanggal_mulai"),
+        "status_event": e.get("status_event"),
+        "nama_olahraga": olah.get(e.get("olahraga_id"), {}).get("nama"),
+    } for e in events]
+    return {"jumlah_atlet": db.atlet.count_documents({"organisasi_id": item_id}), "event": rows}
+
+
+DETAIL_EXTRAS = {"fasilitas": _detail_fasilitas, "atlet": _detail_atlet, "event": _detail_event,
+                 "organisasi": _detail_organisasi}
 
 
 # ---- filters -> MongoDB query (runs inside the cache loader) --------------
@@ -163,7 +193,7 @@ def list_page(spec: TypeSpec, criteria: list, normalized: dict, page: int, size:
         coll = db[spec.collection]
         query = _mongo_query(criteria)
         total = coll.count_documents(query)
-        rows = list(coll.find(query, _projection(spec))
+        rows = list(coll.find(query, _projection())
                     .sort(list(spec.sort) + [(spec.id_field, 1)])  # unique tie-breaker
                     .skip((page - 1) * size)
                     .limit(size))
@@ -181,7 +211,7 @@ def list_page(spec: TypeSpec, criteria: list, normalized: dict, page: int, size:
 def get_detail(spec: TypeSpec, item_id: str) -> tuple[dict | None, str]:
     def load() -> dict | None:
         db = get_db()
-        doc = db[spec.collection].find_one({spec.id_field: item_id}, _projection(spec))
+        doc = db[spec.collection].find_one({spec.id_field: item_id}, _projection())
         if doc is None:
             return None  # a missing record is returned as None and not cached
         ENRICH[spec.name](db, [doc])

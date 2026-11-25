@@ -51,9 +51,15 @@ INDEXES = [
     ("atlet", [("status_binaan", 1)]),
     ("event", [("tanggal_mulai", -1), ("nama", 1), ("event_id", 1)]),
     ("event", [("olahraga_id", 1)]),
+    ("event", [("organisasi_id", 1)]),
     ("kecamatan", [("nama", 1)]),
     ("olahraga", [("nama", 1)]),
     ("organisasi", [("nama", 1)]),
+    ("organisasi", [("nama", 1), ("organisasi_id", 1)]),
+    ("organisasi", [("kelurahan_id", 1)]),
+    ("organisasi", [("jenis_organisasi", 1)]),
+    ("organisasi_olahraga", [("olahraga_id", 1)]),
+    ("organisasi_olahraga", [("organisasi_id", 1)]),
 ]
 
 
@@ -111,6 +117,7 @@ def _scenarios(db) -> list[tuple[str, object | None]]:
     atlet = db.prestasi.find_one({}, {"_id": 0, "atlet_id": 1})
     event = db.event.find_one({}, {"_id": 0, "event_id": 1},
                               sort=[("tanggal_mulai", -1), ("nama", 1), ("event_id", 1)])
+    org = db.organisasi.find_one({}, {"_id": 0, "organisasi_id": 1}, sort=[("nama", 1), ("organisasi_id", 1)])
     return [
         ("fasilitas list, no filter, p1",
          _list_call("fasilitas", {})),
@@ -129,6 +136,10 @@ def _scenarios(db) -> list[tuple[str, object | None]]:
          _list_call("event", {})),
         ("event detail",
          _detail_call("event", event["event_id"]) if event else None),
+        ("organisasi list, no filter",
+         _list_call("organisasi", {})),
+        ("organisasi detail",
+         _detail_call("organisasi", org["organisasi_id"]) if org else None),
     ]
 
 
