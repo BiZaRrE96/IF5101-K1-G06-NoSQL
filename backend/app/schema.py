@@ -3,7 +3,7 @@
 Field names are the SQL column names of the normalized MongoDB collections
 (one collection per SQL table, `_id` never exposed, the natural key is
 `<type>_id`). Code lists come from SQL Bab 3 (CHECK constraints).
-Only this file and service.py know MongoDB collection and field paths.
+Only this file and queries.py know MongoDB collection and field paths.
 """
 import re
 from dataclasses import dataclass, field

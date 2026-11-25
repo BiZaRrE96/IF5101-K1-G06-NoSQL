@@ -1,164 +1,22 @@
 """Read/write use cases shared by the API and the worker.
 
-Reads join the normalized collections on every request. Filters on related
-collections become ID sets inside the cache loader, so a cache HIT skips them.
-Names and children are looked up only for the rows of the page, with one
-$in query per collection (never one query per row).
+Reads join the normalized collections on every cache miss, with one MongoDB
+aggregation (queries.py) that returns the finished page or record; lists also
+count the matches for paging. Filters on related collections become ID sets
+inside the cache loader, so a cache HIT skips them.
 """
-from . import cache, config
+from . import cache, config, queries
 from .db import clean, get_db
 from .schema import Filter, TypeSpec
 
 
 # ---- helpers --------------------------------------------------------------
 
-def _projection() -> dict:
-    # Mongo _id is never read into the response; every other stored field is returned.
-    return {"_id": 0}
-
-
 def _public(spec: TypeSpec, doc: dict) -> dict:
-    """Public shape: the <type>_id value becomes `id`, other fields keep their SQL names."""
+    """Public shape: the <type>_id value becomes `id` (first), other fields keep their SQL names."""
     doc = dict(doc)
     item_id = doc.pop(spec.id_field)
     return clean({"id": item_id, **doc})
-
-
-def _pick(doc: dict, keys: tuple) -> dict:
-    return {k: doc.get(k) for k in keys}
-
-
-def _by_id(db, collection: str, id_field: str, ids, fields=("nama",)) -> dict:
-    """One $in query: {id: row} for the given ids, returning only the listed fields."""
-    ids = list({i for i in ids if i})
-    if not ids:
-        return {}
-    proj = {"_id": 0, id_field: 1, **{f: 1 for f in fields}}
-    return {r[id_field]: r for r in db[collection].find({id_field: {"$in": ids}}, proj)}
-
-
-def _olahraga_by_owner(db, link_coll: str, owner_field: str, owner_ids, extra=()) -> dict:
-    """{owner_id: [{olahraga_id, nama, ...extra}]} from a link collection, two queries total."""
-    links = list(db[link_coll].find({owner_field: {"$in": list(owner_ids)}}, {"_id": 0}))
-    names = _by_id(db, "olahraga", "olahraga_id", {link["olahraga_id"] for link in links})
-    out: dict = {}
-    for link in links:
-        entry = {
-            "olahraga_id": link["olahraga_id"],
-            "nama": names.get(link["olahraga_id"], {}).get("nama"),
-            **{f: link.get(f) for f in extra},
-        }
-        out.setdefault(link[owner_field], []).append(entry)
-    for entries in out.values():
-        entries.sort(key=lambda e: e["nama"] or "")
-    return out
-
-
-# ---- enrichment: adds display names to each row (list page or detail) -----
-
-def _enrich_fasilitas(db, rows: list) -> None:
-    kel = _by_id(db, "kelurahan", "kelurahan_id", {r.get("kelurahan_id") for r in rows},
-                 ("kecamatan_id", "nama"))
-    kec = _by_id(db, "kecamatan", "kecamatan_id", {k.get("kecamatan_id") for k in kel.values()})
-    olah = _olahraga_by_owner(db, "fasilitas_olahraga", "fasilitas_id",
-                              [r["fasilitas_id"] for r in rows], extra=("jumlah_lapangan",))
-    for r in rows:
-        k = kel.get(r.get("kelurahan_id"), {})
-        r["kecamatan_id"] = k.get("kecamatan_id")
-        r["nama_kelurahan"] = k.get("nama")
-        r["nama_kecamatan"] = kec.get(k.get("kecamatan_id"), {}).get("nama")
-        r["olahraga"] = olah.get(r["fasilitas_id"], [])
-
-
-def _enrich_atlet(db, rows: list) -> None:
-    kec = _by_id(db, "kecamatan", "kecamatan_id", {r.get("kecamatan_domisili_id") for r in rows})
-    org = _by_id(db, "organisasi", "organisasi_id", {r.get("organisasi_id") for r in rows})
-    olah = _olahraga_by_owner(db, "atlet_olahraga", "atlet_id", [r["atlet_id"] for r in rows])
-    for r in rows:
-        r["nama_kecamatan"] = kec.get(r.get("kecamatan_domisili_id"), {}).get("nama")
-        r["nama_organisasi"] = org.get(r.get("organisasi_id"), {}).get("nama")
-        r["olahraga"] = olah.get(r["atlet_id"], [])
-
-
-def _enrich_event(db, rows: list) -> None:
-    olah = _by_id(db, "olahraga", "olahraga_id", {r.get("olahraga_id") for r in rows})
-    org = _by_id(db, "organisasi", "organisasi_id", {r.get("organisasi_id") for r in rows})
-    fas = _by_id(db, "fasilitas", "fasilitas_id", {r.get("fasilitas_id") for r in rows})
-    for r in rows:
-        r["nama_olahraga"] = olah.get(r.get("olahraga_id"), {}).get("nama")
-        r["nama_penyelenggara"] = org.get(r.get("organisasi_id"), {}).get("nama")
-        r["nama_fasilitas"] = fas.get(r.get("fasilitas_id"), {}).get("nama")
-
-
-def _enrich_organisasi(db, rows: list) -> None:
-    kel = _by_id(db, "kelurahan", "kelurahan_id", {r.get("kelurahan_id") for r in rows},
-                 ("kecamatan_id", "nama"))
-    kec = _by_id(db, "kecamatan", "kecamatan_id", {k.get("kecamatan_id") for k in kel.values()})
-    olah = _olahraga_by_owner(db, "organisasi_olahraga", "organisasi_id",
-                              [r["organisasi_id"] for r in rows])
-    for r in rows:
-        k = kel.get(r.get("kelurahan_id"), {})
-        r["kecamatan_id"] = k.get("kecamatan_id")
-        r["nama_kelurahan"] = k.get("nama")
-        r["nama_kecamatan"] = kec.get(k.get("kecamatan_id"), {}).get("nama")
-        r["olahraga"] = olah.get(r["organisasi_id"], [])
-
-
-ENRICH = {"fasilitas": _enrich_fasilitas, "atlet": _enrich_atlet, "event": _enrich_event,
-          "organisasi": _enrich_organisasi}
-
-
-# ---- detail-only children -------------------------------------------------
-
-def _detail_fasilitas(db, item_id: str) -> dict:
-    jadwal = (db.jadwal_operasional_fasilitas
-              .find({"fasilitas_id": item_id}, {"_id": 0, "hari": 1, "jam_buka": 1, "jam_tutup": 1})
-              .sort([("hari", 1), ("jam_buka", 1)]))
-    return {"jadwal": list(jadwal)}
-
-
-def _detail_atlet(db, item_id: str) -> dict:
-    pres = list(db.prestasi.find({"atlet_id": item_id}, {"_id": 0}).sort("tanggal_perolehan", -1))
-    events = _by_id(db, "event", "event_id", {p.get("event_id") for p in pres}, ("nama", "olahraga_id"))
-    olah = _by_id(db, "olahraga", "olahraga_id", {e.get("olahraga_id") for e in events.values()})
-    rows = []
-    for p in pres:
-        ev = events.get(p.get("event_id"), {})
-        rows.append({
-            "nama_event": ev.get("nama"),
-            "nama_olahraga": olah.get(ev.get("olahraga_id"), {}).get("nama"),
-            **_pick(p, ("nomor_pertandingan", "peringkat", "medali", "tanggal_perolehan")),
-        })
-    return {"prestasi": rows}
-
-
-def _detail_event(db, item_id: str) -> dict:
-    pres = list(db.prestasi.find({"event_id": item_id}, {"_id": 0}).sort("peringkat", 1))
-    atlet = _by_id(db, "atlet", "atlet_id", {p.get("atlet_id") for p in pres})  # name only
-    rows = [{
-        "nama_atlet": atlet.get(p.get("atlet_id"), {}).get("nama"),
-        **_pick(p, ("nomor_pertandingan", "peringkat", "medali", "tanggal_perolehan")),
-    } for p in pres]
-    return {"prestasi": rows,
-            "jumlah_atlet_terdaftar": db.event_atlet.count_documents({"event_id": item_id})}
-
-
-def _detail_organisasi(db, item_id: str) -> dict:
-    events = list(db.event.find({"organisasi_id": item_id},
-                                {"_id": 0, "nama": 1, "tanggal_mulai": 1, "status_event": 1, "olahraga_id": 1})
-                  .sort([("tanggal_mulai", -1), ("nama", 1)]))
-    olah = _by_id(db, "olahraga", "olahraga_id", {e.get("olahraga_id") for e in events})
-    rows = [{
-        "nama": e.get("nama"),
-        "tanggal_mulai": e.get("tanggal_mulai"),
-        "status_event": e.get("status_event"),
-        "nama_olahraga": olah.get(e.get("olahraga_id"), {}).get("nama"),
-    } for e in events]
-    return {"jumlah_atlet": db.atlet.count_documents({"organisasi_id": item_id}), "event": rows}
-
-
-DETAIL_EXTRAS = {"fasilitas": _detail_fasilitas, "atlet": _detail_atlet, "event": _detail_event,
-                 "organisasi": _detail_organisasi}
 
 
 # ---- filters -> MongoDB query (runs inside the cache loader) --------------
@@ -188,22 +46,30 @@ def _mongo_query(criteria: list) -> dict:
 # ---- use cases ------------------------------------------------------------
 
 def list_page(spec: TypeSpec, criteria: list, normalized: dict, page: int, size: int) -> tuple[dict, str]:
+    version = None  # set by key(); stays None when the cache is off or Redis is down
+
+    def key() -> str:
+        nonlocal version
+        version = cache.current_version(spec.name)
+        return cache.list_key(spec.name, version, normalized, page, size)
+
     def load() -> dict:
         db = get_db()
         coll = db[spec.collection]
         query = _mongo_query(criteria)
-        total = coll.count_documents(query)
-        rows = list(coll.find(query, _projection())
-                    .sort(list(spec.sort) + [(spec.id_field, 1)])  # unique tie-breaker
-                    .skip((page - 1) * size)
-                    .limit(size))
-        ENRICH[spec.name](db, rows)
-        items = [clean({"id": r[spec.id_field], **{c.field: r.get(c.field) for c in spec.columns}})
-                 for r in rows]
-        return {"items": items, "total": total, "page": page, "page_size": size}
 
-    def key() -> str:
-        return cache.list_key(spec.name, cache.current_version(spec.name), normalized, page, size)
+        def count() -> int:
+            return coll.count_documents(query)
+
+        # The total is shared by every page of this filter: cached once per
+        # version, so page 2, 3, ... skip the count. Fixed TTL, not refreshed on read.
+        if version is None:
+            total = count()
+        else:
+            total, _ = cache.cached(cache.count_key(spec.name, version, normalized),
+                                    config.CACHE_TTL_LIST, count)
+        items = list(coll.aggregate(queries.LIST[spec.name](query, (page - 1) * size, size)))
+        return {"items": clean(items), "total": total, "page": page, "page_size": size}
 
     return cache.cached(key, config.CACHE_TTL_LIST, load)
 
@@ -211,13 +77,10 @@ def list_page(spec: TypeSpec, criteria: list, normalized: dict, page: int, size:
 def get_detail(spec: TypeSpec, item_id: str) -> tuple[dict | None, str]:
     def load() -> dict | None:
         db = get_db()
-        doc = db[spec.collection].find_one({spec.id_field: item_id}, _projection())
-        if doc is None:
+        docs = list(db[spec.collection].aggregate(queries.DETAIL[spec.name](item_id)))
+        if not docs:
             return None  # a missing record is returned as None and not cached
-        ENRICH[spec.name](db, [doc])
-        out = _public(spec, doc)
-        out.update(clean(DETAIL_EXTRAS[spec.name](db, item_id)))
-        return out
+        return _public(spec, docs[0])
 
     return cache.cached(cache.entity_key(spec.name, item_id), config.CACHE_TTL_DETAIL, load)
 

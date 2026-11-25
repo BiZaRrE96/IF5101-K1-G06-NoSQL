@@ -62,9 +62,17 @@ def filters_key(type_name: str) -> str:
     return f"filters:{type_name}"                       # dropdown options
 
 
+def _filter_digest(normalized: dict) -> str:
+    return hashlib.sha1(json.dumps(normalized, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def list_key(type_name: str, version: int, normalized: dict, page: int, size: int) -> str:
-    digest = hashlib.sha1(json.dumps(normalized, sort_keys=True).encode()).hexdigest()[:16]
-    return f"list:{type_name}:v{version}:{digest}:p{page}:s{size}"
+    return f"list:{type_name}:v{version}:{_filter_digest(normalized)}:p{page}:s{size}"
+
+
+def count_key(type_name: str, version: int, normalized: dict) -> str:
+    # Total for one filter, shared by all its pages; same version as the list pages.
+    return f"count:{type_name}:v{version}:{_filter_digest(normalized)}"
 
 
 # ---- operations -----------------------------------------------------------
@@ -130,7 +138,7 @@ def invalidate(type_name: str, item_id: str | None = None, also: tuple[str, ...]
 
 def flush_app_keys(type_names) -> int:
     """Delete only keys owned by this app (never FLUSHDB)."""
-    patterns = ["list:*", "filters:*", "ver:*", *[f"{t}:*" for t in type_names]]
+    patterns = ["list:*", "count:*", "filters:*", "ver:*", *[f"{t}:*" for t in type_names]]
     removed = 0
     r = client()
     for pattern in patterns:
